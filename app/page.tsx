@@ -34,6 +34,7 @@ interface SpeechRecognitionInstance extends EventTarget {
   lang: string;
   onresult: ((e: SpeechRecognitionEvent) => void) | null;
   onerror: ((e: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
   start(): void;
   stop(): void;
 }
@@ -128,7 +129,10 @@ export default function Home() {
       recognition.interimResults = true;
       recognition.lang = "en-US";
 
+      let gotResult = false;
+
       recognition.onresult = (e) => {
+        gotResult = true;
         let final = "";
         let interim = "";
         for (let i = 0; i < e.results.length; i++) {
@@ -140,7 +144,19 @@ export default function Home() {
       };
 
       recognition.onerror = (e) => {
-        if (e.error !== "aborted") setError(`Speech recognition error: ${e.error}`);
+        if (e.error === "not-allowed") {
+          setError("Microphone permission denied.");
+        } else if (e.error === "network") {
+          setError("Network error — browser mode needs internet. Switch to ⚡ Groq Whisper mode.");
+        } else if (e.error !== "aborted") {
+          setError(`Speech error: ${e.error}. Try ⚡ Groq Whisper mode instead.`);
+        }
+      };
+
+      recognition.onend = () => {
+        if (!gotResult && recording) {
+          setError("No speech detected. Make sure you're on Chrome/Edge, or switch to ⚡ Groq Whisper mode.");
+        }
       };
 
       recognition.start();

@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "GROQ_API_KEY not configured" }, { status: 500 });
+      return NextResponse.json({ error: "GROQ_API_KEY not set — add it in Vercel → Environment Variables, then redeploy." }, { status: 500 });
     }
 
     const groq = new Groq({ apiKey });

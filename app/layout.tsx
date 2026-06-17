@@ -13,8 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WhisperFlow — Free Voice to Text",
-  description: "Free voice transcription with AI text enhancement. No paid APIs required.",
+  title: "WhisperFlow",
+  description: "Free voice to text — Bengali, Hindi, English",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "WhisperFlow" },
+  other: { "mobile-web-app-capable": "yes" },
 };
 
 export default function RootLayout({

@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       bullet: `Convert into a clean bulleted list of key points. Return only the bullet points:\n\n${text}`,
       email: `Format as a professional email body (no subject line). Return only the email body:\n\n${text}`,
       slack: `Make concise and suitable for a Slack message. Keep it casual. Return only the message:\n\n${text}`,
+      translate: `The following text may be in Bengali, Hindi, English, or a mix. Translate it fully into clear English. Return only the translated text:\n\n${text}`,
     };
 
     const prompt = prompts[mode] ?? prompts.fix;

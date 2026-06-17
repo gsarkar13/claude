@@ -15,7 +15,7 @@ type HistoryItem = {
 const MODES: { value: CleanupMode; label: string; icon: string }[] = [
   { value: "fix", label: "Fix Grammar", icon: "✏️" },
   { value: "formal", label: "Formal", icon: "👔" },
-  { value: "bullet", label: "Bullet Points", icon: "•" },
+  { value: "bullet", label: "Bullets", icon: "•" },
   { value: "email", label: "Email", icon: "✉️" },
   { value: "slack", label: "Slack", icon: "💬" },
 ];
@@ -23,11 +23,9 @@ const MODES: { value: CleanupMode; label: string; icon: string }[] = [
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
-
 interface SpeechRecognitionErrorEvent extends Event {
   error: string;
 }
-
 interface SpeechRecognitionInstance extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -38,7 +36,6 @@ interface SpeechRecognitionInstance extends EventTarget {
   start(): void;
   stop(): void;
 }
-
 declare global {
   interface Window {
     SpeechRecognition: new () => SpeechRecognitionInstance;
@@ -60,24 +57,23 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [amplitude, setAmplitude] = useState(0);
   const [hasSpeechAPI, setHasSpeechAPI] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
 
-  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const isRecordingRef = useRef(false);
   const chunksRef = useRef<Blob[]>([]);
   const animFrameRef = useRef<number>(0);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("whisperflow_history");
     if (saved) setHistory(JSON.parse(saved));
-    setHasSpeechAPI(!!(window.SpeechRecognition || window.webkitSpeechRecognition));
+    const supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    setHasSpeechAPI(supported);
+    if (!supported) setTranscribeMode("groq");
   }, []);
-
-  useEffect(() => {
-    if (!hasSpeechAPI) setTranscribeMode("groq");
-  }, [hasSpeechAPI]);
 
   const saveHistory = useCallback((items: HistoryItem[]) => {
     localStorage.setItem("whisperflow_history", JSON.stringify(items.slice(0, 50)));
@@ -111,7 +107,7 @@ export default function Home() {
     analyserRef.current = null;
   }, []);
 
-  // Browser Web Speech API (free, no API key)
+  // Browser Web Speech API — auto-restarts on mobile Chrome where continuous mode is unreliable
   const startBrowserRecording = useCallback(async () => {
     setError("");
     setRawText("");
@@ -124,58 +120,62 @@ export default function Home() {
       await setupAudioAnalyser(stream);
 
       const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRec();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
 
-      let gotResult = false;
+      const launchRec = () => {
+        if (!isRecordingRef.current) return;
+        const recognition = new SpeechRec();
+        recognition.continuous = false; // false = more reliable on Android Chrome
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
 
-      recognition.onresult = (e) => {
-        gotResult = true;
-        let final = "";
-        let interim = "";
-        for (let i = 0; i < e.results.length; i++) {
-          if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
-          else interim += e.results[i][0].transcript;
-        }
-        if (final) setRawText(final.trim());
-        setInterimText(interim);
+        recognition.onresult = (e) => {
+          let final = "";
+          let interim = "";
+          for (let i = 0; i < e.results.length; i++) {
+            if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
+            else interim += e.results[i][0].transcript;
+          }
+          setRawText((prev) => (prev + " " + final).trim());
+          setInterimText(interim);
+        };
+
+        recognition.onerror = (e) => {
+          if (e.error === "not-allowed") {
+            setError("Microphone permission denied.");
+          } else if (e.error === "network") {
+            setError("Network error. Try ⚡ Groq Whisper mode instead.");
+          } else if (e.error !== "aborted" && e.error !== "no-speech") {
+            setError(`Error: ${e.error}. Try ⚡ Groq Whisper mode.`);
+          }
+        };
+
+        recognition.onend = () => {
+          setInterimText("");
+          // Auto-restart while still holding
+          if (isRecordingRef.current) {
+            setTimeout(launchRec, 100);
+          }
+        };
+
+        recognition.start();
       };
 
-      recognition.onerror = (e) => {
-        if (e.error === "not-allowed") {
-          setError("Microphone permission denied.");
-        } else if (e.error === "network") {
-          setError("Network error — browser mode needs internet. Switch to ⚡ Groq Whisper mode.");
-        } else if (e.error !== "aborted") {
-          setError(`Speech error: ${e.error}. Try ⚡ Groq Whisper mode instead.`);
-        }
-      };
-
-      recognition.onend = () => {
-        if (!gotResult && recording) {
-          setError("No speech detected. Make sure you're on Chrome/Edge, or switch to ⚡ Groq Whisper mode.");
-        }
-      };
-
-      recognition.start();
-      recognitionRef.current = recognition;
+      isRecordingRef.current = true;
       setRecording(true);
+      launchRec();
     } catch {
       setError("Microphone access denied.");
     }
   }, [setupAudioAnalyser]);
 
   const stopBrowserRecording = useCallback(() => {
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
-    teardownAudio();
-    setInterimText("");
+    isRecordingRef.current = false;
     setRecording(false);
+    setInterimText("");
+    teardownAudio();
   }, [teardownAudio]);
 
-  // Groq Whisper (free tier, higher quality)
+  // Groq Whisper — records audio then sends to API
   const startGroqRecording = useCallback(async () => {
     setError("");
     setRawText("");
@@ -191,6 +191,7 @@ export default function Home() {
       chunksRef.current = [];
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.start(100);
+      isRecordingRef.current = true;
       setRecording(true);
     } catch {
       setError("Microphone access denied.");
@@ -198,16 +199,13 @@ export default function Home() {
   }, [setupAudioAnalyser]);
 
   const stopGroqRecording = useCallback(async () => {
+    isRecordingRef.current = false;
     setRecording(false);
     teardownAudio();
 
     const recorder = mediaRecorderRef.current;
     if (!recorder) return;
-
-    await new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
-      recorder.stop();
-    });
+    await new Promise<void>((resolve) => { recorder.onstop = () => resolve(); recorder.stop(); });
 
     const blob = new Blob(chunksRef.current, { type: "audio/webm" });
     if (blob.size < 1000) return;
@@ -239,23 +237,18 @@ export default function Home() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !e.repeat && !recording && (e.target as HTMLElement).tagName !== "TEXTAREA" && (e.target as HTMLElement).tagName !== "INPUT") {
+      const tag = (e.target as HTMLElement).tagName;
+      if (e.code === "Space" && !e.repeat && !recording && tag !== "TEXTAREA" && tag !== "INPUT") {
         e.preventDefault();
         startRecording();
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" && recording) {
-        e.preventDefault();
-        stopRecording();
-      }
+      if (e.code === "Space" && recording) { e.preventDefault(); stopRecording(); }
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
   }, [recording, startRecording, stopRecording]);
 
   const cleanup = useCallback(async (mode: CleanupMode) => {
@@ -273,18 +266,8 @@ export default function Home() {
       if (data.error) throw new Error(data.error);
       setCleanedText(data.text);
 
-      const item: HistoryItem = {
-        id: crypto.randomUUID(),
-        raw: rawText,
-        cleaned: data.text,
-        mode,
-        ts: Date.now(),
-      };
-      setHistory((prev) => {
-        const next = [item, ...prev];
-        saveHistory(next);
-        return next;
-      });
+      const item: HistoryItem = { id: crypto.randomUUID(), raw: rawText, cleaned: data.text, mode, ts: Date.now() };
+      setHistory((prev) => { const next = [item, ...prev]; saveHistory(next); return next; });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cleanup failed");
     } finally {
@@ -299,60 +282,83 @@ export default function Home() {
   }, []);
 
   const scale = recording ? 1 + amplitude * 0.35 : 1;
-  const displayTranscript = rawText + (interimText ? (rawText ? " " : "") + interimText : "");
+
+  const HistoryPanel = (
+    <div className="flex flex-col h-full">
+      <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">History</h2>
+        <button onClick={() => setShowHistory(false)} className="md:hidden text-gray-600 hover:text-white text-lg leading-none">×</button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {history.length === 0 ? (
+          <p className="text-gray-600 text-xs p-4">No recordings yet</p>
+        ) : (
+          history.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => { setRawText(item.raw); setCleanedText(item.cleaned ?? ""); if (item.mode) setActiveMode(item.mode); setShowHistory(false); }}
+              className="w-full text-left p-3 border-b border-gray-800/60 hover:bg-gray-800 transition-colors"
+            >
+              <p className="text-xs text-gray-600 mb-1">
+                {new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                {item.mode && <span className="ml-2 text-blue-500">{item.mode}</span>}
+              </p>
+              <p className="text-xs text-gray-400 truncate">{item.cleaned ?? item.raw}</p>
+            </button>
+          ))
+        )}
+      </div>
+      {history.length > 0 && (
+        <button
+          onClick={() => { setHistory([]); localStorage.removeItem("whisperflow_history"); }}
+          className="p-3 text-xs text-gray-600 hover:text-red-500 transition-colors border-t border-gray-800"
+        >
+          Clear history
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden shrink-0">
-        <div className="p-4 border-b border-gray-800">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">History</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          {history.length === 0 ? (
-            <p className="text-gray-600 text-xs p-4">No recordings yet</p>
-          ) : (
-            history.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setRawText(item.raw);
-                  setCleanedText(item.cleaned ?? "");
-                  if (item.mode) setActiveMode(item.mode);
-                }}
-                className="w-full text-left p-3 border-b border-gray-800/60 hover:bg-gray-800 transition-colors"
-              >
-                <p className="text-xs text-gray-600 mb-1">
-                  {new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  {item.mode && <span className="ml-2 text-blue-500">{item.mode}</span>}
-                </p>
-                <p className="text-xs text-gray-400 truncate">{item.cleaned ?? item.raw}</p>
-              </button>
-            ))
-          )}
-        </div>
-        {history.length > 0 && (
-          <button
-            onClick={() => { setHistory([]); localStorage.removeItem("whisperflow_history"); }}
-            className="p-3 text-xs text-gray-600 hover:text-red-500 transition-colors border-t border-gray-800"
-          >
-            Clear history
-          </button>
-        )}
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex w-64 bg-gray-900 border-r border-gray-800 flex-col overflow-hidden shrink-0">
+        {HistoryPanel}
       </aside>
 
+      {/* Mobile history drawer */}
+      {showHistory && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowHistory(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-gray-900 flex flex-col">
+            {HistoryPanel}
+          </div>
+        </div>
+      )}
+
       {/* Main */}
-      <main className="flex-1 flex flex-col items-center p-8 overflow-y-auto">
+      <main className="flex-1 flex flex-col items-center px-4 py-6 md:p-8 overflow-y-auto">
         {/* Header */}
         <div className="w-full max-w-2xl mb-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-violet-500 bg-clip-text text-transparent">
-                WhisperFlow
-              </h1>
-              <p className="text-gray-600 text-xs mt-0.5">
-                Hold <kbd className="bg-gray-800 px-1 py-0.5 rounded text-gray-400 font-mono text-xs">Space</kbd> or button · 100% free
-              </p>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-3">
+              {/* Mobile history button */}
+              <button
+                onClick={() => setShowHistory(true)}
+                className="md:hidden flex flex-col gap-1 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+              >
+                <span className="block w-5 h-0.5 bg-gray-400" />
+                <span className="block w-5 h-0.5 bg-gray-400" />
+                <span className="block w-5 h-0.5 bg-gray-400" />
+              </button>
+              <div>
+                <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-blue-400 to-violet-500 bg-clip-text text-transparent">
+                  WhisperFlow
+                </h1>
+                <p className="text-gray-600 text-xs mt-0.5 hidden md:block">
+                  Hold <kbd className="bg-gray-800 px-1 py-0.5 rounded text-gray-400 font-mono text-xs">Space</kbd> or button · 100% free
+                </p>
+              </div>
             </div>
 
             {/* Mode toggle */}
@@ -360,65 +366,59 @@ export default function Home() {
               <button
                 onClick={() => setTranscribeMode("browser")}
                 disabled={!hasSpeechAPI}
-                title={!hasSpeechAPI ? "Not supported in this browser" : ""}
-                className={`px-3 py-1.5 rounded-md transition-all ${
+                className={`px-2 md:px-3 py-1.5 rounded-md transition-all whitespace-nowrap ${
                   transcribeMode === "browser"
                     ? "bg-blue-600 text-white"
                     : "text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
                 }`}
               >
-                🌐 Browser
+                🌐 <span className="hidden sm:inline">Browser</span>
               </button>
               <button
                 onClick={() => setTranscribeMode("groq")}
-                className={`px-3 py-1.5 rounded-md transition-all ${
+                className={`px-2 md:px-3 py-1.5 rounded-md transition-all whitespace-nowrap ${
                   transcribeMode === "groq"
                     ? "bg-violet-600 text-white"
                     : "text-gray-500 hover:text-white"
                 }`}
               >
-                ⚡ Groq Whisper
+                ⚡ <span className="hidden sm:inline">Groq</span>
               </button>
             </div>
           </div>
 
-          {transcribeMode === "browser" && (
-            <p className="text-green-500/70 text-xs mt-2">
-              ✓ Using browser Web Speech API — no API key required
-            </p>
-          )}
-          {transcribeMode === "groq" && (
-            <p className="text-violet-400/70 text-xs mt-2">
-              ⚡ Using Groq Whisper (free tier) — add <code className="bg-gray-800 px-1 rounded">GROQ_API_KEY</code> to .env.local
-            </p>
-          )}
+          <p className={`text-xs mt-2 ${transcribeMode === "browser" ? "text-green-500/70" : "text-violet-400/70"}`}>
+            {transcribeMode === "browser"
+              ? "✓ Browser mode — no API key needed (Chrome/Edge)"
+              : "⚡ Groq Whisper — high quality, works on all browsers"}
+          </p>
         </div>
 
         {/* Record Button */}
-        <div className="relative flex items-center justify-center mb-8">
+        <div className="relative flex items-center justify-center mb-6 md:mb-8">
           {recording && (
             <>
-              <div className="absolute w-44 h-44 rounded-full bg-red-500/10 animate-ping" style={{ animationDuration: "1.5s" }} />
-              <div className="absolute w-36 h-36 rounded-full bg-red-500/15 animate-pulse" />
+              <div className="absolute w-48 h-48 md:w-44 md:h-44 rounded-full bg-red-500/10 animate-ping" style={{ animationDuration: "1.5s" }} />
+              <div className="absolute w-40 h-40 md:w-36 md:h-36 rounded-full bg-red-500/15 animate-pulse" />
             </>
           )}
           <button
             onMouseDown={startRecording}
             onMouseUp={stopRecording}
             onMouseLeave={() => recording && stopRecording()}
-            onTouchStart={(e) => { e.preventDefault(); startRecording(); }}
-            onTouchEnd={(e) => { e.preventDefault(); stopRecording(); }}
+            onTouchStart={(e) => { e.preventDefault(); if (!recording) startRecording(); }}
+            onTouchEnd={(e) => { e.preventDefault(); if (recording) stopRecording(); }}
             style={{ transform: `scale(${scale})`, transition: "transform 80ms ease" }}
-            className={`relative w-24 h-24 rounded-full flex items-center justify-center select-none cursor-pointer ${
+            className={`relative w-32 h-32 md:w-24 md:h-24 rounded-full flex items-center justify-center select-none cursor-pointer ${
               recording
                 ? "bg-red-500 shadow-[0_0_50px_rgba(239,68,68,0.5)]"
-                : "bg-blue-600 hover:bg-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.35)] hover:shadow-[0_0_45px_rgba(59,130,246,0.55)]"
+                : "bg-blue-600 hover:bg-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.35)] active:scale-95"
             }`}
           >
             {recording ? (
-              <div className="w-7 h-7 rounded-sm bg-white" />
+              <div className="w-9 h-9 md:w-7 md:h-7 rounded-sm bg-white" />
             ) : (
-              <svg className="w-9 h-9 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-12 h-12 md:w-9 md:h-9 text-white" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
                 <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
               </svg>
@@ -426,55 +426,51 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Status line */}
-        <div className="h-5 mb-6 text-center">
-          {recording && transcribeMode === "browser" && <p className="text-red-400 text-sm animate-pulse">Listening… release to finish</p>}
+        {/* Hold hint for mobile */}
+        <p className="text-gray-600 text-xs mb-4 md:hidden">Hold the button and speak</p>
+
+        {/* Status */}
+        <div className="min-h-5 mb-4 text-center">
+          {recording && transcribeMode === "browser" && <p className="text-red-400 text-sm animate-pulse">Listening… release to stop</p>}
           {recording && transcribeMode === "groq" && <p className="text-red-400 text-sm animate-pulse">Recording… release to transcribe</p>}
           {transcribing && <p className="text-yellow-400 text-sm animate-pulse">Transcribing with Groq Whisper…</p>}
           {cleaning && <p className="text-blue-400 text-sm animate-pulse">Enhancing with LLaMA 3…</p>}
-          {error && <p className="text-red-400 text-xs">{error}</p>}
+          {error && <p className="text-red-400 text-xs px-2 text-center">{error}</p>}
         </div>
 
         {/* Output */}
-        {(displayTranscript || rawText) && (
-          <div className="w-full max-w-2xl space-y-4">
+        {(rawText || interimText) && (
+          <div className="w-full max-w-2xl space-y-3">
             {/* Raw transcript */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">Transcript</span>
                 {rawText && (
-                  <button
-                    onClick={() => copy(rawText)}
-                    className="text-xs text-gray-600 hover:text-white transition-colors"
-                  >
+                  <button onClick={() => copy(rawText)} className="text-xs text-gray-600 hover:text-white transition-colors">
                     Copy
                   </button>
                 )}
               </div>
-              <p className="text-gray-200 leading-relaxed whitespace-pre-wrap">
+              <p className="text-gray-200 leading-relaxed whitespace-pre-wrap text-sm md:text-base">
                 {rawText}
-                {interimText && (
-                  <span className="text-gray-500">{rawText ? " " : ""}{interimText}</span>
-                )}
+                {interimText && <span className="text-gray-500">{rawText ? " " : ""}{interimText}</span>}
               </p>
             </div>
 
             {/* Enhance buttons */}
             {rawText && (
               <div>
-                <p className="text-xs text-gray-600 mb-2 uppercase tracking-wider font-medium">
-                  Enhance with LLaMA 3 (Groq free tier)
-                </p>
+                <p className="text-xs text-gray-600 mb-2 uppercase tracking-wider font-medium">Enhance with AI</p>
                 <div className="flex flex-wrap gap-2">
                   {MODES.map((m) => (
                     <button
                       key={m.value}
                       onClick={() => cleanup(m.value)}
                       disabled={cleaning}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                         activeMode === m.value && cleanedText
                           ? "bg-violet-600 text-white shadow-[0_0_15px_rgba(139,92,246,0.3)]"
-                          : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
+                          : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white active:scale-95"
                       } disabled:opacity-40`}
                     >
                       {m.icon} {m.label}
@@ -489,7 +485,7 @@ export default function Home() {
               <div className="bg-gray-900 border border-violet-800/40 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-violet-400 font-medium uppercase tracking-wider">
-                    LLaMA 3 · {MODES.find((m) => m.value === activeMode)?.label}
+                    AI · {MODES.find((m) => m.value === activeMode)?.label}
                   </span>
                   <button
                     onClick={() => copy(cleanedText)}
@@ -498,7 +494,7 @@ export default function Home() {
                     {copied ? "Copied!" : "Copy"}
                   </button>
                 </div>
-                <p className="text-white leading-relaxed whitespace-pre-wrap">{cleanedText}</p>
+                <p className="text-white leading-relaxed whitespace-pre-wrap text-sm md:text-base">{cleanedText}</p>
               </div>
             )}
           </div>
